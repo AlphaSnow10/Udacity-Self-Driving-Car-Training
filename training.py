@@ -49,21 +49,47 @@ class MyComplexModel(nn.Module):
     def __init__(self):
         super(MyComplexModel, self).__init__()
 
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        # Convolutional layers for center image
+        self.conv1_center = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1)
+        self.conv2_center = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.conv3_center = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        self.pool_center = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        # Convolutional layers for left image
+        self.conv1_left = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1)
+        self.conv2_left = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.conv3_left = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        self.pool_left = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        # Convolutional layers for right image
+        self.conv1_right = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1)
+        self.conv2_right = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.conv3_right = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        self.pool_right = nn.MaxPool2d(kernel_size=2, stride=2)
 
         # Fully connected layers
-        self.fc1 = nn.Linear(256 * 16 * 16, 512)
+        self.fc1 = nn.Linear(256 * 16 * 16 * 3, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 4)  # Output layer with 4 outputs (steering, throttle, reverse, speed)
 
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
+    def forward(self, center_image, left_image, right_image):
+        # Forward pass for center image
+        x_center = self.pool_center(F.relu(self.conv1_center(center_image)))
+        x_center = self.pool_center(F.relu(self.conv2_center(x_center)))
+        x_center = self.pool_center(F.relu(self.conv3_center(x_center)))
+
+        # Forward pass for left image
+        x_left = self.pool_left(F.relu(self.conv1_left(left_image)))
+        x_left = self.pool_left(F.relu(self.conv2_left(x_left)))
+        x_left = self.pool_left(F.relu(self.conv3_left(x_left)))
+
+        # Forward pass for right image
+        x_right = self.pool_right(F.relu(self.conv1_right(right_image)))
+        x_right = self.pool_right(F.relu(self.conv2_right(x_right)))
+        x_right = self.pool_right(F.relu(self.conv3_right(x_right)))
+
+        # Concatenate features from all three images
+        x = torch.cat((x_center, x_left, x_right), dim=1)
 
         # Flatten the tensor before fully connected layers
         x = x.view(x.size(0), -1)
@@ -102,7 +128,7 @@ criterion = nn.MSELoss()
 loss_weights = torch.tensor([1.0, 1.0, 0.0, 0.0])  # Adjust the weights
 
 # Define optimizer and learning rate
-optimizer = optim.Adam(model.parameters(), lr=0.001)  
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Define a learning rate schedule
 scheduler = StepLR(optimizer, step_size=3, gamma=0.5)  # Adjust the step_size and gamma as needed
@@ -121,16 +147,16 @@ for epoch in range(num_epochs):
         optimizer.zero_grad()
 
         # Forward pass
-        outputs = model(center_image)
+        outputs = model(center_image, left_image, right_image)
 
-        # Compute weighted loss
-        loss = torch.mean(loss_weights * (outputs - labels) ** 2)
+        # Compute weighted loss for steering and throttle
+        steering_throttle_loss = torch.mean(loss_weights[:2] * (outputs[:, :2] - labels[:, :2]) ** 2)
 
         # Backpropagation
-        loss.backward()
+        steering_throttle_loss.backward()
         optimizer.step()
 
-        running_loss += loss.item()
+        running_loss += steering_throttle_loss.item()
 
     # Print the loss for this epoch
     print(f"Epoch {epoch + 1}/{num_epochs}, Total Loss: {running_loss / len(train_loader)}")
@@ -138,8 +164,6 @@ for epoch in range(num_epochs):
     # Print individual losses
     steering_loss = torch.mean(loss_weights[0] * (outputs[:, 0] - labels[:, 0]) ** 2).item()
     throttle_loss = torch.mean(loss_weights[1] * (outputs[:, 1] - labels[:, 1]) ** 2).item()
-    reverse_loss = torch.mean(loss_weights[2] * (outputs[:, 2] - labels[:, 2]) ** 2).item()
-    speed_loss = torch.mean(loss_weights[3] * (outputs[:, 3] - labels[:, 3]) ** 2).item()
 
     print(f"Steering Loss: {steering_loss}, Throttle Loss: {throttle_loss}")
 
@@ -152,33 +176,18 @@ for epoch in range(num_epochs):
 # Validation loop
 model.eval()
 val_loss = 0.0
-val_steering_loss = 0.0
-val_throttle_loss = 0.0
-val_reverse_loss = 0.0
-val_speed_loss = 0.0
 
 with torch.no_grad():
     for batch_idx, (center_image, left_image, right_image, labels) in enumerate(val_loader):
-        outputs = model(center_image)
+        outputs = model(center_image, left_image, right_image)
 
-        # Compute weighted loss for each output in validation
-        steering_loss = torch.mean(loss_weights[0] * (outputs[:, 0] - labels[:, 0]) ** 2)
-        throttle_loss = torch.mean(loss_weights[1] * (outputs[:, 1] - labels[:, 1]) ** 2)
-        reverse_loss = torch.mean(loss_weights[2] * (outputs[:, 2] - labels[:, 2]) ** 2)
-        speed_loss = torch.mean(loss_weights[3] * (outputs[:, 3] - labels[:, 3]) ** 2)
+        # Compute weighted loss for steering and throttle in validation
+        steering_throttle_loss = torch.mean(loss_weights[:2] * (outputs[:, :2] - labels[:, :2]) ** 2)
 
-        val_loss += steering_loss + throttle_loss + reverse_loss + speed_loss
-        val_steering_loss += steering_loss.item()
-        val_throttle_loss += throttle_loss.item()
-        val_reverse_loss += reverse_loss.item()
-        val_speed_loss += speed_loss.item()
+        val_loss += steering_throttle_loss.item()
 
-# Compute the average validation loss for each output
-avg_val_steering_loss = val_steering_loss / len(val_loader)
-avg_val_throttle_loss = val_throttle_loss / len(val_loader)
-avg_val_reverse_loss = val_reverse_loss / len(val_loader)
-avg_val_speed_loss = val_speed_loss / len(val_loader)
+# Compute the average validation loss for steering and throttle
+avg_val_loss = val_loss / len(val_loader)
 
-# Print the validation losses for each output
-print(f"Validation Steering Loss: {avg_val_steering_loss}")
-print(f"Validation Throttle Loss: {avg_val_throttle_loss}")
+# Print the validation loss for steering and throttle
+print(f"Validation Steering and Throttle Loss: {avg_val_loss}")
